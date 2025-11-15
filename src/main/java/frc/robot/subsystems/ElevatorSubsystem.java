@@ -9,23 +9,20 @@ import com.ctre.phoenix6.sim.TalonFXSimState;
 import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.math.filter.Debouncer;
 import edu.wpi.first.math.filter.Debouncer.DebounceType;
-import edu.wpi.first.math.geometry.Pose2d;
 import edu.wpi.first.math.geometry.Pose3d;
-import edu.wpi.first.math.geometry.Rotation2d;
 import edu.wpi.first.math.geometry.Rotation3d;
-import edu.wpi.first.networktables.DoublePublisher;
+import edu.wpi.first.math.system.plant.DCMotor;
 import edu.wpi.first.networktables.NetworkTableInstance;
 import edu.wpi.first.networktables.StructPublisher;
 import edu.wpi.first.units.Units;
 import edu.wpi.first.units.measure.MutVoltage;
-import edu.wpi.first.units.measure.Time;
 import edu.wpi.first.units.measure.Voltage;
 import edu.wpi.first.wpilibj.Alert;
 import edu.wpi.first.wpilibj.Alert.AlertType;
 import edu.wpi.first.wpilibj.RobotBase;
 import edu.wpi.first.wpilibj.RobotController;
-import edu.wpi.first.wpilibj.Timer;
 import edu.wpi.first.wpilibj.shuffleboard.Shuffleboard;
+import edu.wpi.first.wpilibj.simulation.ElevatorSim;
 import edu.wpi.first.wpilibj.sysid.SysIdRoutineLog;
 import edu.wpi.first.wpilibj2.command.Command;
 import edu.wpi.first.wpilibj2.command.Commands;
@@ -33,12 +30,6 @@ import edu.wpi.first.wpilibj2.command.SubsystemBase;
 import edu.wpi.first.wpilibj2.command.button.Trigger;
 import edu.wpi.first.wpilibj2.command.sysid.SysIdRoutine;
 import frc.robot.Hardware;
-import frc.robot.Robot;
-import frc.robot.sensors.ArmSensor;
-import frc.robot.subsystems.auto.AutoLogic;
-import jdk.jfr.Timestamp;
-
-import java.util.concurrent.TimeUnit;
 import java.util.function.DoubleConsumer;
 import java.util.function.DoubleSupplier;
 import java.util.function.Supplier;
@@ -81,6 +72,7 @@ public class ElevatorSubsystem extends SubsystemBase {
   public static final double UP_VOLTAGE = 5;
   private final double DOWN_VOLTAGE = -3;
   private final double HOLD_VOLTAGE = 0.6;
+  private static final double SIMULATION_DAMPING_COEFFICIENT = 2.0; // Adjust this value to control damping strength
   // create a Motion Magic request, voltage output
   private final MotionMagicVoltage m_request = new MotionMagicVoltage(0);
 
@@ -90,6 +82,7 @@ public class ElevatorSubsystem extends SubsystemBase {
 
   private final TalonFXSimState m_motorOneSimState;
   private final TalonFXSimState m_motorTwoSimState;
+  private final ElevatorSim m_elevatorSim;
 
   private double curPos;
   private double targetPos;
@@ -106,11 +99,14 @@ public class ElevatorSubsystem extends SubsystemBase {
       new Alert("Elevator", "Motor 2 not connected", AlertType.kError);
   private final Debouncer notConnectedDebouncerOne = new Debouncer(.1, DebounceType.kBoth);
   private final Debouncer notConnectedDebouncerTwo = new Debouncer(.1, DebounceType.kBoth);
-  private  StructPublisher<Pose3d> elevatorPose3d = NetworkTableInstance.getDefault().getStructTopic("elevator/heightPose", Pose3d.struct).publish();
-  public  StructPublisher<Pose3d> TESTpose = NetworkTableInstance.getDefault().getStructTopic("debug/TEST", Pose3d.struct).publish();
-  //public  StructPublisher<Pose3d> TESTpose2 = NetworkTableInstance.getDefault().getStructTopic("debug/TEST2", Pose3d.struct).publish();
-
-
+  private StructPublisher<Pose3d> elevatorPose3d =
+      NetworkTableInstance.getDefault()
+          .getStructTopic("elevator/heightPose", Pose3d.struct)
+          .publish();
+  public StructPublisher<Pose3d> TESTpose =
+      NetworkTableInstance.getDefault().getStructTopic("debug/TEST", Pose3d.struct).publish();
+  // public  StructPublisher<Pose3d> TESTpose2 =
+  // NetworkTableInstance.getDefault().getStructTopic("debug/TEST2", Pose3d.struct).publish();
 
   // Creates a SysIdRoutine
   SysIdRoutine routine =
@@ -125,10 +121,25 @@ public class ElevatorSubsystem extends SubsystemBase {
     m_motor2 = new TalonFX(Hardware.ELEVATOR_MOTOR_TWO, "Drivebase");
     m_motorOneSimState = m_motor.getSimState();
     m_motorTwoSimState = m_motor2.getSimState();
+
+    // Initialize elevator simulation
+    // Elevator specs: ~38 rotations = 1.93 meters (38 / 19.68)
+    m_elevatorSim =
+        new ElevatorSim(
+            DCMotor.getFalcon500(2), // 2 Falcon 500 motors
+            1.0, // Gearing ratio (adjust based on actual mechanism)
+            2.0, // Carriage mass in kg (adjust based on actual mass)
+            0.02, // Drum radius in meters (adjust for your spool/pulley)
+            0.0, // Min height in meters
+            1.93, // Max height in meters (~38 rotations / 19.68)
+            false, // Simulate gravity
+            0.0 // Starting height in meters
+            );
+
     motorConfigs();
 
     Shuffleboard.getTab("Elevator").addDouble("Motor Current Position", () -> getCurrentPosition());
-    //Elevator pose test
+    // Elevator pose test
 
     Shuffleboard.getTab("Elevator").addDouble("Target Position", () -> getTargetPosition());
     Shuffleboard.getTab("Elevator")
@@ -158,14 +169,10 @@ public class ElevatorSubsystem extends SubsystemBase {
         .addDouble("Elevator Speed", () -> m_motor.getVelocity().getValueAsDouble());
 
     // Test commands
-    Shuffleboard.getTab("Elevator")
-        .add("Move to Level Four", setLevel(CORAL_LEVEL_FOUR_PRE_POS));
-    Shuffleboard.getTab("Elevator")
-        .add("Move to Level Three", setLevel(CORAL_LEVEL_THREE_PRE_POS));
-    Shuffleboard.getTab("Elevator")
-        .add("Move to Level Two", setLevel(CORAL_LEVEL_TWO_PRE_POS));
-    Shuffleboard.getTab("Elevator")
-        .add("Move to Level One", setLevel(CORAL_LEVEL_ONE_POS));
+    Shuffleboard.getTab("Elevator").add("Move to Level Four", setLevel(CORAL_LEVEL_FOUR_PRE_POS));
+    Shuffleboard.getTab("Elevator").add("Move to Level Three", setLevel(CORAL_LEVEL_THREE_PRE_POS));
+    Shuffleboard.getTab("Elevator").add("Move to Level Two", setLevel(CORAL_LEVEL_TWO_PRE_POS));
+    Shuffleboard.getTab("Elevator").add("Move to Level One", setLevel(CORAL_LEVEL_ONE_POS));
   }
 
   public Command sysIdQuasistatic(SysIdRoutine.Direction direction) {
@@ -398,8 +405,7 @@ public class ElevatorSubsystem extends SubsystemBase {
         .ignoringDisable(true)
         .withName("ElevatorStop");
   }
-  double smoothedAngleZ = 0.4;
-  double smoothingFactor = 0.1;
+
   @Override
   public void periodic() {
     NotConnectedError.set(
@@ -407,24 +413,34 @@ public class ElevatorSubsystem extends SubsystemBase {
     NotConnectedError2.set(
         notConnectedDebouncerTwo.calculate(!m_motor2.getMotorVoltage().hasUpdated()));
     if (RobotBase.isSimulation()) {
-        if (!Robot.getInstance().sensors.armSensor.booleanInClaw()) {
-        }
-        m_motorOneSimState.setRawRotorPosition(targetPos);
-        m_motorTwoSimState.setRawRotorPosition(targetPos);
-        //elevatorPose3d.set(new Pose3d(0.0, 0.0, getHeightMeters(), new Rotation3d()));
+      // Get the voltage being applied to the motors
+      double appliedVoltage = m_motor.getMotorVoltage().getValueAsDouble();
 
-        double curPos = getCurrentPosition();
-        double smoothingFactor = 0.5;// Percentage Scaler
-        double bottomZ = 0.2;
-        double topZ = 1.55;
-        double minPos = 0.0;
-        double maxPos = 37.5;
-        double targetZ = (bottomZ + ((curPos - minPos) / (maxPos - minPos)) * (topZ - bottomZ));
+      // Apply damping based on velocity
+      double velocity = m_elevatorSim.getVelocityMetersPerSecond();
+      double dampingVoltage = -SIMULATION_DAMPING_COEFFICIENT * velocity;
 
-        TESTpose.set(new Pose3d(
-          0.2, 0.0, targetZ,
-          new Rotation3d(0.0, 0.0, -135)));
+      // Update the elevator simulation with combined voltage (motor + damping)
+      m_elevatorSim.setInputVoltage(appliedVoltage + dampingVoltage);
+      m_elevatorSim.update(0.02); // 20ms periodic cycle
+
+      // Get simulated position and convert to motor rotations
+      double simHeightMeters = m_elevatorSim.getPositionMeters();
+      double simPositionRotations = simHeightMeters * MOTOR_ROTATIONS_PER_METER;
+
+      // Update motor sim states with realistic position
+      m_motorOneSimState.setRawRotorPosition(simPositionRotations);
+      m_motorTwoSimState.setRawRotorPosition(simPositionRotations);
+
+      // Update visualization
+      double curPos = getCurrentPosition();
+      double bottomZ = 0.2;
+      double topZ = 1.55;
+      double minPos = 0.0;
+      double maxPos = 37.5;
+      double targetZ = (bottomZ + ((curPos - minPos) / (maxPos - minPos)) * (topZ - bottomZ));
+
+      TESTpose.set(new Pose3d(0.2, 0.0, targetZ, new Rotation3d(0.0, 0.0, -135)));
     }
-
   }
 }
