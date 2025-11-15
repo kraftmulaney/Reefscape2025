@@ -72,7 +72,13 @@ public class ElevatorSubsystem extends SubsystemBase {
   public static final double UP_VOLTAGE = 5;
   private final double DOWN_VOLTAGE = -3;
   private final double HOLD_VOLTAGE = 0.6;
-  private static final double SIMULATION_DAMPING_COEFFICIENT = 2.0; // Adjust this value to control damping strength
+
+  // Simulation PID constants - tuned for smooth motion
+  private static final double SIM_KP = 50.0;
+  private static final double SIM_KD = 5.0;
+  private double simTargetHeightMeters = 0.0;
+  private double simPreviousError = 0.0;
+
   // create a Motion Magic request, voltage output
   private final MotionMagicVoltage m_request = new MotionMagicVoltage(0);
 
@@ -128,7 +134,7 @@ public class ElevatorSubsystem extends SubsystemBase {
         new ElevatorSim(
             DCMotor.getFalcon500(2), // 2 Falcon 500 motors
             1.0, // Gearing ratio (adjust based on actual mechanism)
-            2.0, // Carriage mass in kg (adjust based on actual mass)
+            5.0, // Carriage mass in kg (adjust based on actual mass)
             0.02, // Drum radius in meters (adjust for your spool/pulley)
             0.0, // Min height in meters
             1.93, // Max height in meters (~38 rotations / 19.68)
@@ -318,6 +324,11 @@ public class ElevatorSubsystem extends SubsystemBase {
                 m_motor.setControl(m_request.withPosition(pos));
                 m_motor2.setControl(new Follower(m_motor.getDeviceID(), true));
                 targetPos = pos;
+
+                // Update simulation target
+                if (RobotBase.isSimulation()) {
+                  simTargetHeightMeters = pos / MOTOR_ROTATIONS_PER_METER;
+                }
               } else {
                 rumble.accept(0.2);
               }
@@ -413,15 +424,17 @@ public class ElevatorSubsystem extends SubsystemBase {
     NotConnectedError2.set(
         notConnectedDebouncerTwo.calculate(!m_motor2.getMotorVoltage().hasUpdated()));
     if (RobotBase.isSimulation()) {
-      // Get the voltage being applied to the motors
-      double appliedVoltage = m_motor.getMotorVoltage().getValueAsDouble();
+      // Calculate PD control to smoothly move to target position
+      double currentHeightMeters = m_elevatorSim.getPositionMeters();
+      double error = simTargetHeightMeters - currentHeightMeters;
+      double errorRate = (error - simPreviousError) / 0.02; // derivative
 
-      // Apply damping based on velocity
-      double velocity = m_elevatorSim.getVelocityMetersPerSecond();
-      double dampingVoltage = -SIMULATION_DAMPING_COEFFICIENT * velocity;
+      // PD control output
+      double pidOutput = (SIM_KP * error) + (SIM_KD * errorRate);
+      simPreviousError = error;
 
-      // Update the elevator simulation with combined voltage (motor + damping)
-      m_elevatorSim.setInputVoltage(appliedVoltage + dampingVoltage);
+      // Apply voltage to simulation
+      m_elevatorSim.setInputVoltage(pidOutput);
       m_elevatorSim.update(0.02); // 20ms periodic cycle
 
       // Get simulated position and convert to motor rotations
