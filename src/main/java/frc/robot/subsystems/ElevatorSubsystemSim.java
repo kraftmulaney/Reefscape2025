@@ -1,8 +1,10 @@
 package frc.robot.subsystems;
 
+import com.ctre.phoenix6.hardware.TalonFX;
 import com.ctre.phoenix6.sim.TalonFXSimState;
 import edu.wpi.first.math.geometry.Pose3d;
 import edu.wpi.first.math.geometry.Rotation3d;
+import edu.wpi.first.math.system.plant.DCMotor;
 import edu.wpi.first.networktables.StructPublisher;
 import edu.wpi.first.wpilibj.simulation.ElevatorSim;
 
@@ -22,22 +24,32 @@ public class ElevatorSubsystemSim {
   private double simPreviousError = 0.0;
 
   /**
-   * Constructor for the elevator simulation.
+   * Constructor for the elevator simulation. Creates all simulation objects internally.
    *
-   * @param elevatorSim The WPILib elevator simulation model
-   * @param motorOneSimState Sim state for motor 1
-   * @param motorTwoSimState Sim state for motor 2
+   * @param motor1 First elevator motor (leader)
+   * @param motor2 Second elevator motor (follower)
    * @param posePublisher Publisher for visualization pose
    */
   public ElevatorSubsystemSim(
-      ElevatorSim elevatorSim,
-      TalonFXSimState motorOneSimState,
-      TalonFXSimState motorTwoSimState,
-      StructPublisher<Pose3d> posePublisher) {
-    this.m_elevatorSim = elevatorSim;
-    this.m_motorOneSimState = motorOneSimState;
-    this.m_motorTwoSimState = motorTwoSimState;
+      TalonFX motor1, TalonFX motor2, StructPublisher<Pose3d> posePublisher) {
+    // Get sim states from motors
+    this.m_motorOneSimState = motor1.getSimState();
+    this.m_motorTwoSimState = motor2.getSimState();
     this.m_posePublisher = posePublisher;
+
+    // Initialize elevator simulation
+    // Elevator specs: ~38 rotations = 1.93 meters (38 / 19.68)
+    this.m_elevatorSim =
+        new ElevatorSim(
+            DCMotor.getFalcon500(2), // 2 Falcon 500 motors
+            1.0, // Gearing ratio (adjust based on actual mechanism)
+            5.0, // Carriage mass in kg (adjust based on actual mass)
+            0.02, // Drum radius in meters (adjust for your spool/pulley)
+            0.0, // Min height in meters
+            1.93, // Max height in meters (~38 rotations / 19.68)
+            false, // Simulate gravity
+            0.0 // Starting height in meters
+            );
   }
 
   /**

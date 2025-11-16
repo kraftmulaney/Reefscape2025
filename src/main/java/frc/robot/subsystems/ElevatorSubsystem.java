@@ -5,12 +5,10 @@ import com.ctre.phoenix6.controls.Follower;
 import com.ctre.phoenix6.controls.MotionMagicVoltage;
 import com.ctre.phoenix6.hardware.TalonFX;
 import com.ctre.phoenix6.signals.NeutralModeValue;
-import com.ctre.phoenix6.sim.TalonFXSimState;
 import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.math.filter.Debouncer;
 import edu.wpi.first.math.filter.Debouncer.DebounceType;
 import edu.wpi.first.math.geometry.Pose3d;
-import edu.wpi.first.math.system.plant.DCMotor;
 import edu.wpi.first.networktables.NetworkTableInstance;
 import edu.wpi.first.networktables.StructPublisher;
 import edu.wpi.first.units.Units;
@@ -21,7 +19,6 @@ import edu.wpi.first.wpilibj.Alert.AlertType;
 import edu.wpi.first.wpilibj.RobotBase;
 import edu.wpi.first.wpilibj.RobotController;
 import edu.wpi.first.wpilibj.shuffleboard.Shuffleboard;
-import edu.wpi.first.wpilibj.simulation.ElevatorSim;
 import edu.wpi.first.wpilibj.sysid.SysIdRoutineLog;
 import edu.wpi.first.wpilibj2.command.Command;
 import edu.wpi.first.wpilibj2.command.Commands;
@@ -71,7 +68,6 @@ public class ElevatorSubsystem extends SubsystemBase {
   public static final double UP_VOLTAGE = 5;
   private final double DOWN_VOLTAGE = -3;
   private final double HOLD_VOLTAGE = 0.6;
-
   // create a Motion Magic request, voltage output
   private final MotionMagicVoltage m_request = new MotionMagicVoltage(0);
 
@@ -79,9 +75,6 @@ public class ElevatorSubsystem extends SubsystemBase {
   private TalonFX m_motor;
   private TalonFX m_motor2;
 
-  private final TalonFXSimState m_motorOneSimState;
-  private final TalonFXSimState m_motorTwoSimState;
-  private final ElevatorSim m_elevatorSim;
   private final ElevatorSubsystemSim m_elevatorSimLogic;
 
   private double curPos;
@@ -119,27 +112,10 @@ public class ElevatorSubsystem extends SubsystemBase {
     // m_encoder.setDistancePerPulse(Constants.kElevatorEncoderDistPerPulse);
     m_motor = new TalonFX(Hardware.ELEVATOR_MOTOR_ONE, "Drivebase");
     m_motor2 = new TalonFX(Hardware.ELEVATOR_MOTOR_TWO, "Drivebase");
-    m_motorOneSimState = m_motor.getSimState();
-    m_motorTwoSimState = m_motor2.getSimState();
 
-    // Initialize elevator simulation
-    // Elevator specs: ~38 rotations = 1.93 meters (38 / 19.68)
-    m_elevatorSim =
-        new ElevatorSim(
-            DCMotor.getFalcon500(2), // 2 Falcon 500 motors
-            1.0, // Gearing ratio (adjust based on actual mechanism)
-            5.0, // Carriage mass in kg (adjust based on actual mass)
-            0.02, // Drum radius in meters (adjust for your spool/pulley)
-            0.0, // Min height in meters
-            1.93, // Max height in meters (~38 rotations / 19.68)
-            false, // Simulate gravity
-            0.0 // Starting height in meters
-            );
-
-    // Create simulation logic wrapper
+    // Create simulation logic - it will handle all sim object creation
     if (RobotBase.isSimulation()) {
-      m_elevatorSimLogic =
-          new ElevatorSubsystemSim(m_elevatorSim, m_motorOneSimState, m_motorTwoSimState, TESTpose);
+      m_elevatorSimLogic = new ElevatorSubsystemSim(m_motor, m_motor2, TESTpose);
     } else {
       m_elevatorSimLogic = null;
     }
@@ -147,8 +123,6 @@ public class ElevatorSubsystem extends SubsystemBase {
     motorConfigs();
 
     Shuffleboard.getTab("Elevator").addDouble("Motor Current Position", () -> getCurrentPosition());
-    // Elevator pose test
-
     Shuffleboard.getTab("Elevator").addDouble("Target Position", () -> getTargetPosition());
     Shuffleboard.getTab("Elevator")
         .addDouble("M1 supply current", () -> m_motor.getSupplyCurrent().getValueAsDouble());
@@ -322,7 +296,6 @@ public class ElevatorSubsystem extends SubsystemBase {
     return runOnce(
             () -> {
               if (hasBeenZeroed) {
-                System.out.println("Setting elevator level to: " + pos);
                 m_motor.setControl(m_request.withPosition(pos));
                 m_motor2.setControl(new Follower(m_motor.getDeviceID(), true));
                 targetPos = pos;
