@@ -10,7 +10,6 @@ import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.math.filter.Debouncer;
 import edu.wpi.first.math.filter.Debouncer.DebounceType;
 import edu.wpi.first.math.geometry.Pose3d;
-import edu.wpi.first.math.geometry.Rotation3d;
 import edu.wpi.first.math.system.plant.DCMotor;
 import edu.wpi.first.networktables.NetworkTableInstance;
 import edu.wpi.first.networktables.StructPublisher;
@@ -73,12 +72,6 @@ public class ElevatorSubsystem extends SubsystemBase {
   private final double DOWN_VOLTAGE = -3;
   private final double HOLD_VOLTAGE = 0.6;
 
-  // Simulation PID constants - tuned for smooth motion
-  private static final double SIM_KP = 50.0;
-  private static final double SIM_KD = 5.0;
-  private double simTargetHeightMeters = 0.0;
-  private double simPreviousError = 0.0;
-
   // create a Motion Magic request, voltage output
   private final MotionMagicVoltage m_request = new MotionMagicVoltage(0);
 
@@ -89,6 +82,7 @@ public class ElevatorSubsystem extends SubsystemBase {
   private final TalonFXSimState m_motorOneSimState;
   private final TalonFXSimState m_motorTwoSimState;
   private final ElevatorSim m_elevatorSim;
+  private final ElevatorSubsystemSim m_elevatorSimLogic;
 
   private double curPos;
   private double targetPos;
@@ -141,6 +135,14 @@ public class ElevatorSubsystem extends SubsystemBase {
             false, // Simulate gravity
             0.0 // Starting height in meters
             );
+
+    // Create simulation logic wrapper
+    if (RobotBase.isSimulation()) {
+      m_elevatorSimLogic =
+          new ElevatorSubsystemSim(m_elevatorSim, m_motorOneSimState, m_motorTwoSimState, TESTpose);
+    } else {
+      m_elevatorSimLogic = null;
+    }
 
     motorConfigs();
 
@@ -326,8 +328,8 @@ public class ElevatorSubsystem extends SubsystemBase {
                 targetPos = pos;
 
                 // Update simulation target
-                if (RobotBase.isSimulation()) {
-                  simTargetHeightMeters = pos / MOTOR_ROTATIONS_PER_METER;
+                if (m_elevatorSimLogic != null) {
+                  m_elevatorSimLogic.setTargetPosition(pos);
                 }
               } else {
                 rumble.accept(0.2);
@@ -423,37 +425,9 @@ public class ElevatorSubsystem extends SubsystemBase {
         notConnectedDebouncerOne.calculate(!m_motor.getMotorVoltage().hasUpdated()));
     NotConnectedError2.set(
         notConnectedDebouncerTwo.calculate(!m_motor2.getMotorVoltage().hasUpdated()));
-    if (RobotBase.isSimulation()) {
-      // Calculate PD control to smoothly move to target position
-      double currentHeightMeters = m_elevatorSim.getPositionMeters();
-      double error = simTargetHeightMeters - currentHeightMeters;
-      double errorRate = (error - simPreviousError) / 0.02; // derivative
 
-      // PD control output
-      double pidOutput = (SIM_KP * error) + (SIM_KD * errorRate);
-      simPreviousError = error;
-
-      // Apply voltage to simulation
-      m_elevatorSim.setInputVoltage(pidOutput);
-      m_elevatorSim.update(0.02); // 20ms periodic cycle
-
-      // Get simulated position and convert to motor rotations
-      double simHeightMeters = m_elevatorSim.getPositionMeters();
-      double simPositionRotations = simHeightMeters * MOTOR_ROTATIONS_PER_METER;
-
-      // Update motor sim states with realistic position
-      m_motorOneSimState.setRawRotorPosition(simPositionRotations);
-      m_motorTwoSimState.setRawRotorPosition(simPositionRotations);
-
-      // Update visualization
-      double curPos = getCurrentPosition();
-      double bottomZ = 0.2;
-      double topZ = 1.55;
-      double minPos = 0.0;
-      double maxPos = 37.5;
-      double targetZ = (bottomZ + ((curPos - minPos) / (maxPos - minPos)) * (topZ - bottomZ));
-
-      TESTpose.set(new Pose3d(0.2, 0.0, targetZ, new Rotation3d(0.0, 0.0, -135)));
+    if (m_elevatorSimLogic != null) {
+      m_elevatorSimLogic.updateSimulation(getCurrentPosition());
     }
   }
 }
